@@ -1,0 +1,254 @@
+##Distance decay relationship
+##Com: A community table with samples as rows and taxa as columns. 
+##Geo: A Geographic table with samples as rows and geographic coordinates as columns. 
+Com <- read.table("Com.txt",sep="\t",header = T,row.names = 1)
+Geo <- read.table("env.txt",sep="\t",header = T,row.names = 1)
+Geo <- Geo[match(colnames(Com),rownames(Geo)),]
+n = nrow(Geo)
+geodis = matrix(0, n, n)
+for(i in c(1:(n-1))){
+  for(j in c(i:n)){
+    geodis[i, j] = gdist(Geo[i,1], Geo[i,2], Geo[j, 1], Geo[j,2], units = "km")
+  }
+}
+geodis = as.dist(t(geodis))
+geodis[geodis==0] = 0.1
+geodis<-geodis*0.001
+dist2 <- vegdist(t(Com),method = "bray")
+dist2 <- 1-dist2
+plot(geodis,dist2)
+lm.mod <- lm(dist2~geodis)
+lines(as.vector(geodis),as.vector(lm.mod$fitted.values))
+summary(lm.mod)
+
+
+
+
+##Niche breadth
+##Com: A community table with samples as rows and taxa as columns. 
+Com.niche <- function(Com, stats=TRUE){
+    require(spaa)
+    Com<-Com[,colSums(Com)>0]
+    B<-niche.width(Com,method="levins")
+    B_com<-1:nrow(Com)
+    for(i in 1:nrow(Com)){
+       a<-Com[i,]
+       a<-a[a>0]
+       B_com[i]<-mean(as.numeric(B[,names(a)]))
+    }
+    return(B_com)
+}
+
+
+
+
+
+##Neutral model
+#' Fit Sloan et al. (2006) Neutral Model
+#' Fit neutral model developed by Sloan et al. (2006, Environ Microbiol 8(4):732-740) and implemented by Burns et al. (2015, ISME J 10(3):655-664).
+#' @param otu An OTU-table with taxa as columns and samples as rows.
+#' @keywords neutral
+#' @return A list of length two; first element contains fit statistics, the second element contains predictions.
+#' @import bbmle
+#' @export
+otu = read.table(file = "otu.txt",sep="\t",row.names=1,header=T)
+neutral.fit <- function(otu){
+  
+  # Frequency
+  otu.pa <- (otu>0)*1
+  freq <- apply(otu.pa, 2, mean)
+  
+  # Individuals per community
+  N <- mean(apply(otu, 1, sum))
+  
+  # Relative abundance
+  p <- apply(otu, 2, function(x) mean(x))/N
+  
+  # Detection limit
+  d = 1/N
+  
+  # Define likelihood function
+  neutral.ll <- function(m, sigma){
+    R = freq - pbeta(d, N*m*p, N*m*(1-p), lower.tail=FALSE)
+    -sum(dnorm(R, 0, sigma,log=TRUE))
+  }
+  
+  # Fit neutral model
+  m.mle <- mle(neutral.ll, start=list(m=0.01, sigma=0.1),method="Nelder-Mead")
+  
+  # R-squared
+  gRsqr <- 1 - exp(-as.numeric(logLik(m.mle))/length(p))
+  
+  # Predictions
+  freq.pred <- pbeta(d, N*m.mle@coef['m']*p, N*m.mle@coef['m']*(1-p), lower.tail=FALSE)
+  pred.ci <- binconf(freq.pred*nrow(otu), nrow(otu), return.df=TRUE)
+  
+  # Bind results
+  stats <- cbind(m.mle@coef['m'], m.mle@details$value,gRsqr , N, nrow(otu), length(p), d)
+  pred <- cbind(p, freq, freq.pred, pred.ci[,2:3])
+  
+  results <- list(stats,pred)
+  return(results)
+}
+neutral.fit(t(otu)) 
+
+
+
+##Local contributions to beta-diversity (LCDB)
+##From R code in Legendre, P. & Caceres, M. De. Beta diversity as the variance of community data: dissimilarity coefficients and partitioning. Ecology Letters 16, 951–963 (2013).
+# Y : community composition data matrix.
+Y<- read.table("Com.txt",sep="\t",header = T,row.names = 1)
+Y=t(Y)
+beta.div <- function(Y, method="hellinger", sqrt.D=FALSE, samp=TRUE, nperm=999, save.D=FALSE, clock=FALSE)
+
+  ### Internal functions
+  centre <- function(D,n)
+    # Centre a square matrix D by matrix algebra
+    # mat.cen = (I - 11'/n) D (I - 11'/n)
+  {	One <- matrix(1,n,n)
+  mat <- diag(n) - One/n
+  mat.cen <- mat %*% D %*% mat
+  }
+  ###
+  BD.group1 <- function(Y, method, save.D, per)
+  {
+    if(method=="profiles") Y = decostand(Y, "total")
+    if(method=="hellinger") Y = decostand(Y, "hellinger")
+    if(method=="chord") Y = decostand(Y, "norm")
+    if(method=="chisquare") Y = decostand(Y, "chi.square")
+    #
+    s <- scale(Y, center=TRUE, scale=FALSE)^2   # eq. 1
+    SStotal <- sum(s)          # eq. 2
+    BDtotal <- SStotal/(n-1)   # eq. 3
+    if(!per) { SCBD<-apply(s,2,sum)/SStotal }else{ SCBD<-NA }  # eqs. 4a and 4b
+    LCBD <- apply(s, 1, sum)/SStotal  # eqs. 5a and 5b
+    #
+    D <- NA
+    if(!per & save.D)   D <- dist(Y)
+    #
+    out <- list(SStotal_BDtotal=c(SStotal,BDtotal), SCBD=SCBD, LCBD=LCBD, 
+                method=method, D=D)
+  }
+  ###
+  BD.group2 <- function(Y, method, sqrt.D)
+  {
+    if(method == "divergence") {
+      D = D11(Y)		
+      
+    } else if(any(method == 
+                  c("jaccard","sorensen","ochiai"))) 
+    {
+      if(method=="jaccard") D = dist.binary(Y, method=1) # ade4 takes sqrt(D)
+      if(method=="sorensen")  D = dist.binary(Y, method=5) #ade4 takes sqrt(D)
+      if(method=="ochiai") D = dist.binary(Y, method=7) # ade4 takes sqrt(D)
+      
+    } else if(any(method == 
+                  c("manhattan","canberra","whittaker","percentagedifference","wishart"))) 
+    {
+      if(method=="manhattan") D = vegdist(Y, "manhattan")
+      if(method=="canberra")  D = vegdist(Y, "canberra")
+      if(method=="whittaker") D = vegdist(decostand(Y,"total"),"manhattan")/2
+      if(method=="percentagedifference") D = vegdist(Y, "bray")
+      if(method=="wishart")   D = WishartD(Y)
+    } else {
+      if(method=="modmeanchardiff") D = D19(Y)
+      if(method=="kulczynski")  D = vegdist(Y, "kulczynski")
+      if(method=="ab.jaccard")  D = chao(Y, coeff="Jaccard", samp=samp)
+      if(method=="ab.sorensen") D = chao(Y, coeff="Sorensen", samp=samp)
+      if(method=="ab.ochiai")   D = chao(Y, coeff="Ochiai", samp=samp)
+      if(method=="ab.simpson")  D = chao(Y, coeff="Simpson", samp=samp)
+    }
+    #
+    if(sqrt.D) D = sqrt(D)
+    SStotal <- sum(D^2)/n      # eq. 8
+    BDtotal <- SStotal/(n-1)   # eq. 3
+    delta1 <- centre(as.matrix(-0.5*D^2), n)   # eq. 9
+    LCBD <- diag(delta1)/SStotal               # eq. 10b
+    #
+    out <- list(SStotal_BDtotal=c(SStotal,BDtotal), LCBD=LCBD, 
+                method=method, D=D)
+  }
+  ###
+  ###
+  method <- match.arg(method, c("euclidean", "manhattan", "modmeanchardiff", "profiles", "hellinger", "chord", "chisquare", "divergence", "canberra", "whittaker", "percentagedifference", "wishart", "kulczynski", "ab.jaccard", "ab.sorensen","ab.ochiai","ab.simpson","jaccard","sorensen","ochiai","none"))
+  #
+  if(any(method == c("profiles", "hellinger", "chord", "chisquare", "manhattan", "modmeanchardiff", "divergence", "canberra", "whittaker", "percentagedifference", "kulczynski"))) require(vegan)
+  if(any(method == c("jaccard","sorensen","ochiai"))) require(ade4)
+  #
+  if(is.table(Y)) Y <- Y[1:nrow(Y),1:ncol(Y)]    # In case class(Y) is "table"
+  n <- nrow(Y)
+  #
+  aa <- system.time({
+    if(any(method == 
+           c("euclidean", "profiles", "hellinger", "chord", "chisquare","none"))) {
+      note <- "Info -- This coefficient is Euclidean"
+      res <- BD.group1(Y, method, save.D, per=FALSE)
+      #
+      # Permutation test for LCBD indices, distances group 1
+      if(nperm>0) {
+        p <- ncol(Y)
+        nGE.L = rep(1,n)
+        for(iperm in 1:nperm) {
+          Y.perm = apply(Y,2,sample)
+          res.p <- BD.group1(Y.perm, method, save.D, per=TRUE)
+          ge <- which(res.p$LCBD >= res$LCBD)
+          nGE.L[ge] <- nGE.L[ge] + 1
+        }
+        p.LCBD <- nGE.L/(nperm+1)
+      } else { p.LCBD <- NA }
+      #
+      if(save.D) { D <- res$D } else { D <- NA }
+      #
+      out <- list(SStotal_BDtotal=res$SStotal_BDtotal, SCBD=res$SCBD, 
+                  LCBD=res$LCBD, p.LCBD=p.LCBD, method=method, note=note, D=D)
+      
+    } else {
+      #
+      if(method == "divergence") {
+        note = "Info -- This coefficient is Euclidean"
+      } else if(any(method == c("jaccard","sorensen","ochiai"))) {
+        note = c("Info -- This coefficient is Euclidean because dist.binary ",
+                 "of ade4 computes it as sqrt(D). Use beta.div with option sqrt.D=FALSE")
+      } else if(any(method == 
+                    c("manhattan","canberra","whittaker","percentagedifference","wishart"))) {
+        if(sqrt.D) {
+          note = "Info -- This coefficient, in the form sqrt(D), is Euclidean"
+        } else {
+          note = c("Info -- For this coefficient, sqrt(D) would be Euclidean", 
+                   "Use is.euclid(D) of ade4 to check Euclideanarity of this D matrix")
+        }
+      } else {
+        note = c("Info -- This coefficient is not Euclidean", 
+                 "Use is.euclid(D) of ade4 to check Euclideanarity of this D matrix")
+      }
+      #
+      res <- BD.group2(Y, method, sqrt.D)
+      #
+      # Permutation test for LCBD indices, distances group 2
+      if(nperm>0) {
+        nGE.L = rep(1,n)
+        for(iperm in 1:nperm) {
+          Y.perm = apply(Y,2,sample)
+          res.p <- BD.group2(Y.perm, method, sqrt.D)
+          ge <- which(res.p$LCBD >= res$LCBD)
+          nGE.L[ge] <- nGE.L[ge] + 1
+        }
+        p.LCBD <- nGE.L/(nperm+1)
+      } else { p.LCBD <- NA }
+      #
+      if(sqrt.D) note.sqrt.D<-"sqrt.D=TRUE"  else  note.sqrt.D<-"sqrt.D=FALSE"
+      if(save.D) { D <- res$D } else { D <- NA }
+      #
+      out <- list(SStotal_BDtotal=res$SStotal_BDtotal, LCBD=res$LCBD,  
+                  p.LCBD=p.LCBD, method=c(method,note.sqrt.D), note=note, D=D)
+    }
+    #
+  })
+  aa[3] <- sprintf("%2f",aa[3])
+  if(clock) cat("Time for computation =",aa[3]," sec\n")
+  #
+  class(out) <- "beta.div"
+  out
+}
+beta <- beta.div(Y, method="hellinger", sqrt.D=FALSE, samp=TRUE, nperm=999, save.D=FALSE, clock=FALSE)
+
